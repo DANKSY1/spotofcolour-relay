@@ -1,13 +1,24 @@
-import WebSocket, { WebSocketServer } from "ws";
+import http from "http";
+import { WebSocketServer } from "ws";
 import axios from "axios";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = "gpt-4o-realtime-preview";
 const AI_HANDLER = "https://spotofcolour.com/ai-caller/ai-handler.php";
 
+// Use Render’s assigned port
 const port = process.env.PORT || 8080;
-const wss = new WebSocketServer({ port });
-console.log(`✅ Claire relay listening on port ${port}`);
+
+// Create an HTTP server so Render can upgrade the connection
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { "Content-Type": "text/plain" });
+  res.end("Claire relay running – use WSS only\n");
+});
+
+// Attach WebSocketServer to that HTTP server
+const wss = new WebSocketServer({ server });
+server.listen(port, () => console.log(`✅ Claire relay listening on port ${port}`));
+
 
 
 wss.on("connection", async (twilioSocket) => {

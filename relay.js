@@ -5,8 +5,10 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = "gpt-4o-realtime-preview";
 const AI_HANDLER = "https://spotofcolour.com/ai-caller/ai-handler.php";
 
-const wss = new WebSocketServer({ port: 8080 });
-console.log("✅ Claire relay listening on port 8080");
+const port = process.env.PORT || 8080;
+const wss = new WebSocketServer({ port });
+console.log(`✅ Claire relay listening on port ${port}`);
+
 
 wss.on("connection", async (twilioSocket) => {
   console.log("📞 Twilio connected");

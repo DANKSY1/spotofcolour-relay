@@ -12,7 +12,7 @@ const port = process.env.PORT || 8080;
 // Create an HTTP server so Render can upgrade the connection
 const server = http.createServer((req, res) => {
   res.writeHead(200, { "Content-Type": "text/plain" });
-  res.end("Claire relay running – use WSS only\n");
+  res.end("Claire relay running - use WSS only\n");
 });
 
 // Attach WebSocketServer to that HTTP server
@@ -22,7 +22,7 @@ server.listen(port, () => console.log(`✅ Claire relay listening on port ${port
 wss.on("connection", async (twilioSocket) => {
   console.log("📞 Twilio connected");
 
-  // Log any initial events from Twilio
+  // Log Twilio events for debugging
   twilioSocket.on("message", (msg) => {
     try {
       const data = JSON.parse(msg);
@@ -32,6 +32,7 @@ wss.on("connection", async (twilioSocket) => {
     }
   });
 
+  // --- Create OpenAI realtime session ---
   let session;
   try {
     const response = await axios.post(
@@ -46,20 +47,25 @@ wss.on("connection", async (twilioSocket) => {
     return;
   }
 
-  // Explicitly use the ws WebSocket implementation
+  // Explicitly use ws’ WebSocket (not Node’s built-in one)
   const openaiSocket = new WebSocket(
     `wss://api.openai.com/v1/realtime?model=${OPENAI_MODEL}`,
-    {
-      headers: { Authorization: `Bearer ${session.client_secret.value}` }
-    }
+    { headers: { Authorization: `Bearer ${session.client_secret.value}` } }
   );
 
-  openaiSocket.on("open", () => console.log("🤖 Connected to OpenAI"));
+  let openaiReady = false;
+
+  openaiSocket.on("open", () => {
+    openaiReady = true;
+    console.log("🤖 Connected to OpenAI");
+  });
 
   // ----- Twilio → OpenAI -----
   twilioSocket.on("message", (msg) => {
     try {
       const data = JSON.parse(msg);
+      if (!openaiReady) return; // wait until OpenAI socket is ready
+
       if (data.event === "media" && data.media?.payload) {
         openaiSocket.send(
           JSON.stringify({
@@ -68,6 +74,7 @@ wss.on("connection", async (twilioSocket) => {
           })
         );
       }
+
       if (data.event === "stop") {
         openaiSocket.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
         openaiSocket.send(JSON.stringify({ type: "response.create" }));
@@ -81,9 +88,23 @@ wss.on("connection", async (twilioSocket) => {
   openaiSocket.on("message", (msg) => {
     try {
       const data = JSON.parse(msg);
+
+      // forward audio deltas (Claire’s speech)
       if (data.type === "response.output_audio.delta" && data.delta) {
-        twilioSocket.send(JSON.stringify({ event: "media", media: { payload: data.delta } }));
+        twilioSocket.send(
+          JSON.stringify({
+            event: "media",
+            media: { payload: data.delta },
+          })
+        );
       }
+
+      // signal that a response finished
+      if (data.type === "response.completed") {
+        twilioSocket.send(JSON.stringify({ event: "mark", mark: { name: "done" } }));
+      }
+
+      // handle function calls (for Derby course lookups)
       if (data.type === "response.function_call") {
         axios
           .post(AI_HANDLER, data)
@@ -103,7 +124,7 @@ wss.on("connection", async (twilioSocket) => {
     }
   });
 
-  // Handle disconnects / errors cleanly
+  // --- Cleanup and error handling ---
   twilioSocket.on("close", (code, reason) => {
     openaiSocket.close();
     console.log(`❌ Twilio disconnected (code ${code}, reason: ${reason})`);

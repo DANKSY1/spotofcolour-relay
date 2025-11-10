@@ -1,5 +1,5 @@
 import http from "http";
-import { WebSocketServer } from "ws";
+import { WebSocketServer, WebSocket } from "ws";
 import axios from "axios";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -19,10 +19,18 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocketServer({ server });
 server.listen(port, () => console.log(`✅ Claire relay listening on port ${port}`));
 
-
-
 wss.on("connection", async (twilioSocket) => {
   console.log("📞 Twilio connected");
+
+  // Log any initial events from Twilio
+  twilioSocket.on("message", (msg) => {
+    try {
+      const data = JSON.parse(msg);
+      console.log("📨 Twilio event:", data.event);
+    } catch {
+      console.log("⚠️ Non-JSON message from Twilio");
+    }
+  });
 
   let session;
   try {
@@ -38,31 +46,38 @@ wss.on("connection", async (twilioSocket) => {
     return;
   }
 
+  // Explicitly use the ws WebSocket implementation
   const openaiSocket = new WebSocket(
     `wss://api.openai.com/v1/realtime?model=${OPENAI_MODEL}`,
-    { headers: { Authorization: `Bearer ${session.client_secret.value}` } }
+    {
+      headers: { Authorization: `Bearer ${session.client_secret.value}` }
+    }
   );
 
   openaiSocket.on("open", () => console.log("🤖 Connected to OpenAI"));
 
+  // ----- Twilio → OpenAI -----
   twilioSocket.on("message", (msg) => {
     try {
       const data = JSON.parse(msg);
       if (data.event === "media" && data.media?.payload) {
-        openaiSocket.send(JSON.stringify({
-          type: "input_audio_buffer.append",
-          audio: data.media.payload
-        }));
+        openaiSocket.send(
+          JSON.stringify({
+            type: "input_audio_buffer.append",
+            audio: data.media.payload,
+          })
+        );
       }
       if (data.event === "stop") {
         openaiSocket.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
         openaiSocket.send(JSON.stringify({ type: "response.create" }));
       }
     } catch (err) {
-      console.error("Parse error Twilio->OpenAI:", err.message);
+      console.error("Parse error Twilio→OpenAI:", err.message);
     }
   });
 
+  // ----- OpenAI → Twilio -----
   openaiSocket.on("message", (msg) => {
     try {
       const data = JSON.parse(msg);
@@ -77,19 +92,28 @@ wss.on("connection", async (twilioSocket) => {
               JSON.stringify({
                 type: "response.function_result",
                 id: data.id,
-                output: res.data.response || res.data
+                output: res.data.response || res.data,
               })
             )
           )
-          .catch(console.error);
+          .catch((err) => console.error("Function call error:", err.message));
       }
     } catch (err) {
-      console.error("Parse error OpenAI->Twilio:", err.message);
+      console.error("Parse error OpenAI→Twilio:", err.message);
     }
   });
 
-  twilioSocket.on("close", () => {
+  // Handle disconnects / errors cleanly
+  twilioSocket.on("close", (code, reason) => {
     openaiSocket.close();
-    console.log("❌ Twilio disconnected");
+    console.log(`❌ Twilio disconnected (code ${code}, reason: ${reason})`);
+  });
+
+  twilioSocket.on("error", (err) => {
+    console.error("⚠️ Twilio socket error:", err);
+  });
+
+  openaiSocket.on("error", (err) => {
+    console.error("⚠️ OpenAI socket error:", err);
   });
 });
